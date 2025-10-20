@@ -24,6 +24,10 @@ wheels/
 *.manifest
 *.spec
 
+# Keep the main executable but ignore other dist files
+dist/*
+!dist/GitAuto.exe
+
 # IDE
 .vscode/
 .idea/
