@@ -22,6 +22,39 @@ def save_config(data):
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f)
 
+def revert_to_last_published(repo_path, status_update, show_error_popup):
+    def worker():
+        try:
+            status_update("Reverting to last published...", "#FF9800")
+            subprocess.run(["git", "fetch"], cwd=repo_path, check=True,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            # Determine upstream (e.g., origin/main)
+            result = subprocess.run([
+                    "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"
+                ], cwd=repo_path, capture_output=True, text=True, check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            upstream = result.stdout.strip()
+            # Reset hard to the upstream (last published)
+            subprocess.run(["git", "reset", "--hard", upstream], cwd=repo_path, check=True,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            subprocess.run(["git", "clean", "-fd"], cwd=repo_path, check=True,
+                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            # Get the last published commit message to display in green
+            msg = subprocess.run([
+                    "git", "log", "-1", "--pretty=%B", upstream
+                ], cwd=repo_path, capture_output=True, text=True, check=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            last_published_msg = msg.stdout.strip().split('\n')[0] if msg.stdout else "Last successful commit"
+            status_update(f"✅ {last_published_msg}", "#00C853")
+        except subprocess.CalledProcessError as err:
+            status_update("Revert failed", "#E53935")
+            err_text = err.stderr.decode() if getattr(err, 'stderr', None) else str(err)
+            show_error_popup("Revert Error", f"Failed to revert to last published commit:\n{err_text}")
+        except Exception as err:
+            status_update("Revert failed", "#E53935")
+            show_error_popup("Revert Error", f"Unexpected error:\n{str(err)}")
+    threading.Thread(target=worker, daemon=True).start()
+
 def get_latest_version(repo_path):
     try:
         result = subprocess.run(
@@ -60,7 +93,8 @@ def run_git_push(repo_path, status_update, show_error_popup):
     except subprocess.CalledProcessError as e:
         error_msg = f"Git Error:\n\n{e.stderr.decode() if e.stderr else str(e)}"
         status_update("Git error occurred", "#E53935")
-        show_error_popup("Git Error", error_msg)
+        # After the user acknowledges the error, revert to the last published commit
+        show_error_popup("Git Error", error_msg, after_ok=lambda: revert_to_last_published(repo_path, status_update, show_error_popup))
     except Exception as e:
         error_msg = f"Unexpected Error:\n\n{str(e)}"
         status_update("Error occurred", "#E53935")
@@ -127,8 +161,14 @@ def main():
             set_button.pack(side="right", padx=(3, 5), pady=2)
             reset_button.pack(side="right", padx=(3, 0), pady=2)
 
-    def show_error_popup(title, message):
-        root.after(0, lambda: messagebox.showerror(title, message))
+    def show_error_popup(title, message, after_ok=None):
+        def _show_and_then():
+            messagebox.showerror(title, message)
+            if after_ok:
+                after_ok()
+        root.after(0, _show_and_then)
+
+    # moved to module scope
 
     def cmd_push():
         repo_path = config.get("repo_path")
